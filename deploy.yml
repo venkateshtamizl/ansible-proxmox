@@ -1,0 +1,83 @@
+- name: Deploy VMs in Proxmox via SSH
+  hosts: proxmox
+  gather_facts: no
+  vars_files:
+    - vms.yml
+    - secrets.yml
+
+  vars:
+    iso_dest_dir: "/var/lib/vz/template/iso"
+    iso_src_dir: "/root/ansible-proxmox/iso"
+    required_isos:
+      - DeploySystem_x64.iso
+      - Virtio-Win-0.1.240.iso
+    ova_filename: "20250819 REV7 TPL_VISICS-UBUNTU24.ova"
+
+  tasks:
+
+    # ─── ISO CHECK & COPY ─────────────────────────────────────────────────────
+
+    - name: Check if ISOs exist on Proxmox
+      ansible.builtin.stat:
+        path: "{{ iso_dest_dir }}/{{ item }}"
+      loop: "{{ required_isos }}"
+      register: iso_stat
+
+    - name: Copy missing ISOs to Proxmox
+      ansible.builtin.copy:
+        src: "{{ iso_src_dir }}/{{ item.item }}"
+        dest: "{{ iso_dest_dir }}/{{ item.item }}"
+        mode: '0644'
+      loop: "{{ iso_stat.results }}"
+      when: not item.stat.exists
+    # ─── OVA CHECK & COPY ─────────────────────────────────────────────────────
+
+    - name: Check if OVA exists on Proxmox
+      ansible.builtin.stat:
+        path: "/root/{{ ova_filename }}"
+      register: ova_check
+    - name: Copy OVA to Proxmox if missing
+      ansible.builtin.synchronize:
+        src: "/root/ansible-proxmox/iso/{{ ova_filename }}"
+        dest: "/root/{{ ova_filename }}"
+        rsync_opts:
+          - "--progress"
+          - "--human-readable"
+      when: not ova_check.stat.exists
+
+    # ─── VM EXISTS CHECK ──────────────────────────────────────────────────────
+
+    - name: Check if VM already exists
+      ansible.builtin.command: qm status {{ item.vmid }}
+      loop: "{{ vms }}"
+      register: vm_status
+      ignore_errors: yes
+
+    # ─── VM CREATION ──────────────────────────────────────────────────────────
+
+    - name: Create VM
+      ansible.builtin.command: >
+        qm create {{ item.item.vmid }}
+        --name {{ item.item.name }}
+        --memory {{ item.item.ram }}
+        --sockets {{ item.item.sockets }}
+        --cores {{ item.item.cores }}
+        --cpu x86-64-v2-AES
+        --bios seabios
+        --scsihw virtio-scsi-single
+        --scsi0 local-lvm:{{ item.item.disk }}
+        --ide2 local:iso/DeploySystem_x64.iso,media=cdrom
+        --net0 virtio,bridge=vmbr0,tag=999
+        --boot order=scsi0
+        --agent 1
+        --onboot 1
+      loop: "{{ vm_status.results }}"
+      when: item.rc != 0
+
+    # ─── DISK RESIZE ──────────────────────────────────────────────────────────
+
+    - name: Resize disk
+      ansible.builtin.command: >
+        qm resize {{ item.vmid }} scsi0 {{ item.disk }}G
+      loop: "{{ vms }}"
+      ignore_errors: yes

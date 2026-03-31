@@ -1,0 +1,8 @@
+vms:
+  - name: NX-01
+    node: test          # exact Proxmox node name (check in GUI)
+    vmid: 101                 # unique VM ID
+    ram: 2048
+    sockets: 2
+    cores: 2
+    disk: 50
