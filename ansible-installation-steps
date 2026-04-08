@@ -10,4 +10,4 @@ COMMANDS:
 
 which ansible
 ansible --version
-Test
+est
