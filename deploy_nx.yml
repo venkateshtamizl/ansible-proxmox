@@ -56,6 +56,37 @@
         mode: '0644'
       loop: "{{ ova_stat.results }}"
       when: not item.stat.exists
+      
+      
+  # ─── EXTRACT OVA ──────────────────────────────────────────────────────────
+    - name: Create extraction directory
+      ansible.builtin.file:
+        path: "/root/extracted_ova"
+        state: directory
+        mode: '0755'
+
+    - name: Extract OVA file
+      ansible.builtin.command: >
+        tar -xf "/root/{{ item }}" -C "/root/extracted_ova"
+      loop: "{{ required_ova }}"
+      
+      
+  # ─── FIND VMDK ────────────────────────────────────────────────────────────
+    - name: Find VMDK file inside extracted folder
+      ansible.builtin.find:
+        paths: "/root/extracted_ova"
+        patterns: "*.vmdk"
+      register: vmdk_found
+
+    - name: Show VMDK found
+      ansible.builtin.debug:
+        msg: "VMDK found: {{ vmdk_found.files[0].path }}"
+      when: vmdk_found.files | length > 0
+
+    - name: Fail if no VMDK found
+      ansible.builtin.fail:
+        msg: "No VMDK found in /root/extracted_ova — OVA extraction may have failed"
+      when: vmdk_found.files | length == 0
 
     # ─── VM EXISTS CHECK ──────────────────────────────────────────────────────
 
@@ -65,9 +96,8 @@
       ignore_errors: yes
       failed_when: false
 
-    # ─── VM CREATION ────────────────────────────────────────────────────────
-
-    - name: Create VM
+    # ─── CREATE VM SKELETON ───────────────────────────────────────────────────
+    - name: Create VM skeleton
       ansible.builtin.command: >
         qm create {{ vmid }}
         --name {{ vm_name }}
@@ -75,14 +105,12 @@
         --sockets {{ nx_vms[0].sockets }}
         --cores {{ nx_vms[0].cores }}
         --cpu x86-64-v2-AES
+        --numa 0
         --bios seabios
         --scsihw virtio-scsi-single
-        --scsi0 local-lvm:{{ nx_vms[0].disk }}
-        --ide2 local:iso/DeploySystem_x64.iso,media=cdrom
         --net0 virtio,bridge=vmbr0,tag=999
-        --boot order=scsi0
-        --agent 1
         --onboot 1
+        --agent enabled=1
       when: vm_status.rc != 0
 
     # ─── DISK RESIZE ──────────────────────────────────────────────────────────
