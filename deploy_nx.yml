@@ -87,7 +87,6 @@
 
     # ─── DISK RESIZE ──────────────────────────────────────────────────────────
 
-    # ─── DISK RESIZE ──────────────────────────────────────────────────────────
     - name: Resize disk
       ansible.builtin.command: >
         qm resize {{ vmid }} scsi0 {{ nx_vms[0].disk }}G
