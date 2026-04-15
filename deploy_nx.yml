@@ -13,6 +13,7 @@
     - name: vm_name
       prompt: "Enter VM Name (e.g. NX-01)"
       private: no
+      
 
   vars:
     iso_dest_dir: "/var/lib/vz/template/iso"
@@ -21,11 +22,11 @@
       - DeploySystem_x64.iso
       - Virtio-Win-0.1.240.iso
     required_ova:
-      - "20250819 REV7 TPL_VISICS-UBUNTU24.ova"
+      - "testubuntu.ova"
 
   tasks:
-
-    # ─── ISO CHECK & COPY ─────────────────────────────────────────────────────
+    
+    ## ─── ISO CHECK & COPY ─────────────────────────────────────────────────────
 
     - name: Check if ISOs exist on Proxmox
       ansible.builtin.stat:
@@ -40,7 +41,6 @@
         mode: '0644'
       loop: "{{ iso_stat.results }}"
       when: not item.stat.exists
-    # ─── OVA CHECK & COPY ─────────────────────────────────────────────────────
 
  # ─── OVA CHECK & COPY ─────────────────────────────────────────────────────
     - name: Check if OVA exists on Proxmox
@@ -93,7 +93,6 @@
     - name: Check if VM already exists
       ansible.builtin.command: qm status {{ vmid }}
       register: vm_status
-      ignore_errors: yes
       failed_when: false
 
     # ─── CREATE VM SKELETON ───────────────────────────────────────────────────
@@ -108,7 +107,10 @@
         --numa 0
         --bios seabios
         --scsihw virtio-scsi-single
-        --net0 virtio,bridge=vmbr0,tag=999
+        --serial0 socket
+        --vga std
+        --net0 virtio,bridge=vmbr0,tag=1
+        --kvm 0
         --onboot 1
         --agent enabled=1
       when: vm_status.rc != 0
@@ -158,3 +160,12 @@
     - name: Set boot order to virtio0
       ansible.builtin.command: >
         qm set {{ vmid }} --boot order=virtio0
+    # ─── CLEANUP EXTRACTED FILES ──────────────────────────────────────────────
+    - name: Remove extracted OVA folder
+      ansible.builtin.file:
+        path: "/root/extracted_ova"
+        state: absent
+    # ADDED
+    # ─── START VM ────────────────────────────────────────────────────────
+    - name: Start VM
+      ansible.builtin.command: qm start {{ vmid }}
