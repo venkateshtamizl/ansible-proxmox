@@ -107,10 +107,8 @@
         --numa 0
         --bios seabios
         --scsihw virtio-scsi-single
-        --serial0 socket
-        --vga std
-        --net0 virtio,bridge=vmbr0,tag=1
-        --kvm 0
+        --net0 virtio,bridge=vmbr0,tag=999
+        --kvm 1
         --onboot 1
         --agent enabled=1
       when: vm_status.rc != 0
@@ -169,3 +167,126 @@
     # ─── START VM ────────────────────────────────────────────────────────
     - name: Start VM
       ansible.builtin.command: qm start {{ vmid }}
+      
+    ## ─── WAIT FOR QEMU AGENT ──────────────────────────────────────────────
+    - name: Wait for QEMU agent to respond
+      ansible.builtin.command: qm agent {{ vmid }} ping
+      register: agent_ping
+      until: agent_ping.rc == 0
+      retries: 30
+      delay: 10
+      failed_when: false
+
+    ## ─── WAIT FOR VM TO GET IP ────────────────────────────────────────────
+    - name: Wait for VM to get DHCP IP
+      ansible.builtin.pause:
+        seconds: 30
+
+    # ─── GET VM IP ────────────────────────────────────────────────────────
+    - name: Get VM IP address
+      ansible.builtin.shell: >
+        qm agent {{ vmid }} network-get-interfaces |
+        python3 -c "import json,sys; d=json.load(sys.stdin);
+        [print(a['ip-address']) for i in d if i['name']=='ens18'
+        for a in i['ip-addresses'] if a['ip-address-type']=='ipv4']"
+      register: vm_ip
+
+    - name: Show VM IP
+      ansible.builtin.debug:
+        msg: "VM IP is: {{ vm_ip.stdout }}"
+
+    - name: Fail if IP not found
+      ansible.builtin.fail:
+        msg: "Could not get VM IP — check DHCP or QEMU agent"
+      when: vm_ip.stdout == ""
+
+    # ─── ADD VM TO INVENTORY ──────────────────────────────────────────────
+    - name: Add VM to inventory
+      ansible.builtin.add_host:
+        name: "{{ vm_ip.stdout }}"
+        groups: new_vm
+        ansible_user: root
+        ansible_ssh_pass: "{{ vm_ssh_password }}"
+        ansible_host: "{{ vm_ip.stdout }}"
+        ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o PasswordAuthentication=yes'
+        ansible_python_interpreter: /usr/bin/python3.12
+        vm_name: "{{ vm_name }}"
+    # ═══════════════════════════════════════════════════════
+# SECOND PLAY — runs directly ON the VM
+# ═══════════════════════════════════════════════════════
+- name: Configure NX VM
+  hosts: new_vm
+  gather_facts: no
+  vars_files:
+    - secrets.yml
+  vars:
+    ansible_python_interpreter: /usr/bin/python3.12
+
+  tasks:
+
+    ## ─── WAIT FOR SSH ─────────────────────────────────────────────────────
+    - name: Wait for SSH port to be open
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        timeout: 300
+        delay: 10
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    # ─── TEST SSH CONNECTION ───────────────────────────────────────────────
+    - name: Test SSH connection
+      ansible.builtin.ping:
+      
+    # ─── SET HOSTNAME ─────────────────────────────────────────────────────
+    - name: Set VM hostname
+      ansible.builtin.hostname:
+        name: "{{ hostvars[inventory_hostname]['vm_name'] }}"
+
+    # ─── COPY SCRIPT TO VM ────────────────────────────────────────────────
+    - name: Copy configure script to VM
+      ansible.builtin.copy:
+        src: "/root/ansible-proxmox/templates/configure_vm.sh"
+        dest: "/root/configure_vm.sh"
+        mode: '0755'
+
+    # ─── RUN SCRIPT ───────────────────────────────────────────────────────
+    - name: Run configuration script
+      ansible.builtin.shell: /root/configure_vm.sh {{ hostvars[inventory_hostname]['vm_name'] }}
+      async: 120
+      poll: 0
+      ignore_errors: yes
+
+    # ─── WAIT FOR VM TO GO DOWN ───────────────────────────────────────────
+    - name: Wait for VM to reboot
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        state: stopped
+        timeout: 60
+        delay: 10
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    # ─── WAIT FOR VM TO COME BACK ─────────────────────────────────────────
+    - name: Wait for VM to come back online
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 22
+        state: started
+        timeout: 180
+        delay: 30
+      delegate_to: localhost
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+
+    # ─── VERIFY AFTER REBOOT ──────────────────────────────────────────────
+    - name: Verify hostname after reboot
+      ansible.builtin.command: hostname
+      register: hostname_result
+
+    - name: Show hostname
+      ansible.builtin.debug:
+        msg: "VM hostname is: {{ hostname_result.stdout }}"
